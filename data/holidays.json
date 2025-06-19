@@ -1,0 +1,19 @@
+{
+  "thanksgiving": {
+    "start": "2025-11-21",
+    "end": "2025-11-30",
+    "assigned_to": "Mom"
+  },
+
+  "christmas_eve": {
+    "start": "2025-12-17",
+    "end": "2025-12-24",
+    "assigned_to": "Dad"
+  },
+
+  "christmas": {
+    "start": "2025-12-25",
+    "end": "2026-01-05",
+    "assigned_to": "Mom"
+  }
+}
