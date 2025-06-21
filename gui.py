@@ -3,7 +3,7 @@ import sqlite3
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QCalendarWidget,
     QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout,
-    QMessageBox, QDialog, QComboBox, QLineEdit, QDialogButtonBox, QFormLayout, QCheckBox
+    QMessageBox, QDialog, QComboBox, QLineEdit, QDialogButtonBox, QFormLayout, QInputDialog, QCheckBox
 )
 from PyQt6.QtCore import QDate
 from PyQt6.QtGui import QTextCharFormat, QColor
@@ -13,7 +13,12 @@ from datetime import datetime, timedelta
 class CustodyCalendar(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Custody Calendar 2025")
+
+        # Ask for year input
+        year, ok = QInputDialog.getInt(self, "Select Year", "Enter calendar year:", value=2025)
+        self.year = year if ok else 2025
+
+        self.setWindowTitle(f"Custody Calendar {self.year}")
         self.resize(500, 400)
 
         self.conn = sqlite3.connect("custody_calendar.db")
@@ -21,8 +26,8 @@ class CustodyCalendar(QMainWindow):
 
         self.calendar = QCalendarWidget()
         self.calendar.setGridVisible(True)
-        self.calendar.setMinimumDate(QDate(2025, 1, 1))
-        self.calendar.setMaximumDate(QDate(2025, 12, 31))
+        self.calendar.setMinimumDate(QDate(self.year, 1, 1))
+        self.calendar.setMaximumDate(QDate(self.year, 12, 31))
         self.calendar.clicked.connect(self.select_date)
 
         self.label = QLabel("Select a date to assign custody")
@@ -41,6 +46,9 @@ class CustodyCalendar(QMainWindow):
         self.recur_btn = QPushButton("Apply Recurring Schedule")
         self.recur_btn.clicked.connect(self.open_recurring_schedule)
 
+        self.note_btn = QPushButton("Add/View Note")
+        self.note_btn.clicked.connect(self.add_view_note)
+
         # Layout
         button_row = QHBoxLayout()
         button_row.addWidget(self.mom_btn)
@@ -52,6 +60,7 @@ class CustodyCalendar(QMainWindow):
         layout.addWidget(self.label)
         layout.addWidget(self.summary_btn)
         layout.addWidget(self.recur_btn)
+        layout.addWidget(self.note_btn)
         layout.addLayout(button_row)
 
         container = QWidget()
@@ -63,7 +72,7 @@ class CustodyCalendar(QMainWindow):
 
     def create_table(self):
         c = self.conn.cursor()
-        c.execute("CREATE TABLE IF NOT EXISTS assignments (date TEXT PRIMARY KEY, parent TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS assignments (date TEXT PRIMARY KEY, parent TEXT, note TEXT)")
         self.conn.commit()
 
     def select_date(self, date):
@@ -75,13 +84,14 @@ class CustodyCalendar(QMainWindow):
     def assign_parent(self, parent):
         date_str = self.selected_date.toString("yyyy-MM-dd")
         c = self.conn.cursor()
-
+        c.execute("SELECT note FROM assignments WHERE date = ?", (date_str,))
+        note_result = c.fetchone()
+        note = note_result[0] if note_result else ""
         if parent:
-            c.execute("REPLACE INTO assignments (date, parent) VALUES (?, ?)", (date_str, parent))
+            c.execute("REPLACE INTO assignments (date, parent, note) VALUES (?, ?, ?)", (date_str, parent, note))
         else:
             c.execute("DELETE FROM assignments WHERE date = ?", (date_str,))
         self.conn.commit()
-
         self.update_calendar_day(self.selected_date, parent)
         self.label.setText(f"{date_str} assigned to: {parent or 'None'}")
 
@@ -111,22 +121,35 @@ class CustodyCalendar(QMainWindow):
     def show_summary(self):
         cursor = self.conn.cursor()
         cursor.execute("SELECT date, parent FROM assignments")
-        counts = {"Mom": {"total": 0, "weekend": 0}, "Dad": {"total": 0, "weekend": 0}}
+        yearly_counts = {}
 
         for date_str, parent in cursor.fetchall():
-            if parent not in counts:
+            try:
+                dt = datetime.strptime(date_str, "%Y-%m-%d")
+                year = dt.year
+                if parent not in ["Mom", "Dad"]:
+                    continue
+                if year not in yearly_counts:
+                    yearly_counts[year] = {
+                        "Mom": {"total": 0, "weekend": 0},
+                        "Dad": {"total": 0, "weekend": 0}
+                    }
+                is_weekend = dt.weekday() >= 5
+                yearly_counts[year][parent]["total"] += 1
+                if is_weekend:
+                    yearly_counts[year][parent]["weekend"] += 1
+            except Exception:
                 continue
-            dt = datetime.strptime(date_str, "%Y-%m-%d")
-            is_weekend = dt.weekday() >= 5
-            counts[parent]["total"] += 1
-            if is_weekend:
-                counts[parent]["weekend"] += 1
 
-        summary = (
-            f"=== Custody Summary ===\n"
-            f"Mom: {counts['Mom']['total']} total days, {counts['Mom']['weekend']} weekend days\n"
-            f"Dad: {counts['Dad']['total']} total days, {counts['Dad']['weekend']} weekend days"
-        )
+        summary = "=== Custody Summary by Year ===\n"
+        for year in sorted(yearly_counts.keys()):
+            counts = yearly_counts[year]
+            summary += (
+                f"\nYear {year}:\n"
+                f"  Mom - {counts['Mom']['total']} days, {counts['Mom']['weekend']} weekend days\n"
+                f"  Dad - {counts['Dad']['total']} days, {counts['Dad']['weekend']} weekend days\n"
+            )
+
         QMessageBox.information(self, "Custody Summary", summary)
 
     def open_recurring_schedule(self):
@@ -136,21 +159,19 @@ class CustodyCalendar(QMainWindow):
         form = QFormLayout(dialog)
         parent_input = QComboBox()
         parent_input.addItems(["Mom", "Dad"])
+
         days_checkboxes = {
-            "Monday": QCheckBox("Monday"),
-            "Tuesday": QCheckBox("Tuesday"),
-            "Wednesday": QCheckBox("Wednesday"),
-            "Thursday": QCheckBox("Thursday"),
-            "Friday": QCheckBox("Friday"),
-            "Saturday": QCheckBox("Saturday"),
-            "Sunday": QCheckBox("Sunday"),
+            day: QCheckBox(day) for day in
+            ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         }
-        start_input = QLineEdit("2025-01-01")
-        end_input = QLineEdit("2025-12-31")
+        interval_input = QLineEdit("2")
+        start_input = QLineEdit(f"{self.year}-01-01")
+        end_input = QLineEdit(f"{self.year}-12-31")
 
         form.addRow("Parent:", parent_input)
-        for day in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]:
-            form.addRow(f"{day}:", days_checkboxes[day])
+        for day, checkbox in days_checkboxes.items():
+            form.addRow(day + ":", checkbox)
+        form.addRow("Every N Weeks:", interval_input)
         form.addRow("Start Date (YYYY-MM-DD):", start_input)
         form.addRow("End Date (YYYY-MM-DD):", end_input)
 
@@ -162,25 +183,28 @@ class CustodyCalendar(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             try:
                 parent = parent_input.currentText()
-                selected_days = [i for i, d in
-                                 enumerate(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
-                                 if days_checkboxes[d].isChecked()]
+                interval = int(interval_input.text())
+                selected_days = [i for i, d in enumerate(days_checkboxes) if days_checkboxes[d].isChecked()]
                 start = datetime.strptime(start_input.text(), "%Y-%m-%d")
                 end = datetime.strptime(end_input.text(), "%Y-%m-%d")
             except ValueError:
-                QMessageBox.warning(self, "Input Error", "Invalid date format.")
+                QMessageBox.warning(self, "Input Error", "Invalid input.")
                 return
 
             cursor = self.conn.cursor()
             applied = []
-
             dt = start
+            week_index = 0
             while dt <= end:
-                if dt.weekday() in selected_days:
-                    date_str = dt.strftime("%Y-%m-%d")
-                    cursor.execute("REPLACE INTO assignments (date, parent) VALUES (?, ?)", (date_str, parent))
-                    applied.append(date_str)
-                dt += timedelta(days=1)
+                if week_index % interval == 0:
+                    for weekday in selected_days:
+                        d = dt + timedelta(days=(weekday - dt.weekday()) % 7)
+                        if start <= d <= end:
+                            date_str = d.strftime("%Y-%m-%d")
+                            cursor.execute("REPLACE INTO assignments (date, parent, note) VALUES (?, ?, ?)", (date_str, parent, ""))
+                            applied.append(date_str)
+                dt += timedelta(weeks=1)
+                week_index += 1
 
             self.conn.commit()
             for date_str in applied:
@@ -188,9 +212,28 @@ class CustodyCalendar(QMainWindow):
                 self.update_calendar_day(qdate, parent)
             QMessageBox.information(self, "Schedule Applied", f"{len(applied)} dates assigned to {parent}.")
 
+    def add_view_note(self):
+        from PyQt6.QtWidgets import QInputDialog
+        date_str = self.selected_date.toString("yyyy-MM-dd")
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT note FROM assignments WHERE date = ?", (date_str,))
+        existing_note = cursor.fetchone()
+        note = existing_note[0] if existing_note else ""
+        text, ok = QInputDialog.getMultiLineText(self, f"Note for {date_str}", "Note:", note)
+        if ok:
+            cursor.execute("SELECT parent FROM assignments WHERE date = ?", (date_str,))
+            parent_result = cursor.fetchone()
+            parent = parent_result[0] if parent_result else ""
+            cursor.execute("REPLACE INTO assignments (date, parent, note) VALUES (?, ?, ?)", (date_str, parent, text))
+            self.conn.commit()
+
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = CustodyCalendar()
     window.show()
     sys.exit(app.exec())
+
+
+
